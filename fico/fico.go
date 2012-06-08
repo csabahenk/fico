@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"encoding/json"
 
 	"dir"
 )
@@ -132,6 +133,11 @@ const usage = `Intuit mon.sh clone
 options:
 `
 
+type scanrec struct {
+	Tstart, Tend time.Time
+	Trel, Files int
+}
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, os.Args[0])
@@ -143,10 +149,17 @@ func main() {
 	scan := flag.Int("scanby", 10, "interval to scan by")
 	rec  := flag.Int("recby", 20, "interval to record by")
 	turns := flag.Int("turns", 0, "number of iterations")
-	//logf := flag.String("logf", "", "log file")
+	logp := flag.String("logf", "", "log file")
 	flag.Parse()
 
 	runtime.GOMAXPROCS(*workers)
+
+	var logj *json.Encoder
+	if *logp != "" {
+		logf, err := os.OpenFile(*logp, os.O_WRONLY|os.O_CREATE, 0600)
+		if err != nil { log.Fatal(err) }
+		logj = json.NewEncoder(logf)
+	}
 
 	targets := flag.Args()
 	if len(targets) == 0 {
@@ -159,12 +172,18 @@ func main() {
 	for t := 0;; {
 		*turns -= 1
 		go func(t, tr int) {
+			tn0 := time.Now()
 			count := countdirs(targets)
+			tn1 := time.Now()
 			m := fmt.Sprintf("%3d %6d", t, count)
 			if t % *rec == 0 {
 				m = colorize(RED, m)
 			}
 			fmt.Println(m)
+			if logj != nil {
+				err := logj.Encode(scanrec{ tn0, tn1, t, count})
+				if err != nil { log.Fatal(err) }
+			}
 			if tr == 0 { os.Exit(0) }
 		}(t, *turns)
 		to := t

@@ -230,11 +230,11 @@ func main() {
 
 	runtime.GOMAXPROCS(*workers)
 
-	var logj *json.Encoder
+	var logf *os.File
+	var err error
 	if *logp != "" {
-		logf, err := os.OpenFile(*logp, os.O_WRONLY|os.O_CREATE, 0600)
+		logf, err = os.OpenFile(*logp, os.O_WRONLY|os.O_CREATE, 0600)
 		if err != nil { log.Fatal(err) }
-		logj = json.NewEncoder(logf)
 	}
 
 	if *filter != "" {
@@ -262,8 +262,11 @@ func main() {
 				m = colorize(RED, m)
 			}
 			fmt.Println(m)
-			if logj != nil {
-				err := logj.Encode(scanrec{ tn0, tn1, t, count})
+			if logf != nil {
+				jlog, err := json.Marshal(scanrec{ tn0, tn1, t, count})
+				if err != nil { log.Fatal(err) }
+				jlog = append(jlog, '\n')
+				_, err = logf.Write(jlog)
 				if err != nil { log.Fatal(err) }
 			}
 			if tr == 0 { os.Exit(0) }

@@ -11,6 +11,7 @@ import (
 	"time"
 	"encoding/json"
 	"path/filepath"
+	"syscall"
 
 	"dir"
 )
@@ -32,6 +33,7 @@ var workers *int
 var filter *string
 var filterfiles *bool
 var stat *bool
+var fuzzy *bool
 
 func colorize(c int, txt string) string {
 	return fmt.Sprintf("\x1b[01;3%dm%s\x1b[00m", c, txt)
@@ -40,6 +42,24 @@ func colorize(c int, txt string) string {
 // don't waste time on cleaning
 func pjoin(elem ...string) string {
 	return strings.Join(elem, "/")
+}
+
+func relaxerrno(err error, errnos ...syscall.Errno) bool {
+	var xerrno syscall.Errno
+	switch xerr := err.(type) {
+	case *os.PathError:
+		xerrno = xerr.Err.(syscall.Errno)
+	case *os.SyscallError:
+		xerrno = xerr.Err.(syscall.Errno)
+	case syscall.Errno:
+		xerrno = xerr
+	default:
+		return false
+	}
+	for _, errno := range errnos {
+		if xerrno == errno { return true }
+	}
+	return false
 }
 
 type jspec struct {
@@ -59,17 +79,39 @@ func (js *jspec) match(pat string) bool {
 
 func countdir(js *jspec, c chan *jspec) int {
 	f, err := os.Open(js.path)
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		if *fuzzy && relaxerrno(err, syscall.ENOENT) {
+			fmt.Fprintln(os.Stderr, "[W]", js.path, "got error with", err)
+			return 0
+		} else {
+			log.Fatal(err)
+		}
+	}
 	des, err := dir.Readdir(f, *hint)
 	f.Close()
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		if *fuzzy && relaxerrno(err, syscall.ENOENT, syscall.ENOTDIR) {
+			fmt.Fprintln(os.Stderr, "[W]", js.path, "got error with", err)
+			return 0
+		} else {
+			log.Fatal(err)
+		}
+	}
 
 	fc := 0
 	for _, de := range des {
 		if de.Type == dir.DT_UNKNOWN {
 			if *stat {
 				de.Type, err = dir.Modestat(js.join(de).path)
-				if err != nil { log.Fatal(err) }
+				if err != nil {
+					if *fuzzy && relaxerrno(err, syscall.ENOENT) {
+						fmt.Fprintln(os.Stderr, "[W]", js.join(de).path,
+							     "got error with", err)
+						continue
+					} else {
+						log.Fatal(err)
+					}
+				}
 			} else {
 				log.Fatalf("got no filetype info: %s", js.join(de).path)
 			}
@@ -179,6 +221,7 @@ func main() {
 	filter = flag.String("filter", "", "glob patterns to exclude")
 	filterfiles = flag.Bool("filterfiles", false, "apply filter to files, too")
 	stat = flag.Bool("stat", false, "salvage missing dirent type by lstat")
+	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
 	scan := flag.Int("scanby", 10, "interval to scan by")
 	rec  := flag.Int("recby", 20, "interval to record by")
 	turns := flag.Int("turns", 0, "number of iterations")

@@ -1,3 +1,12 @@
+// Copyright 2012 Csaba Henk
+
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// LICENSE: http://golang.org/LICENSE
+
+
 package dir
 
 import (
@@ -5,6 +14,8 @@ import (
 	"syscall"
 	"unsafe"
 )
+
+// data from kernel headers
 
 const (
 	DT_UNKNOWN = 0
@@ -30,11 +41,18 @@ var Types = [...]string{
 	DT_WHT     : "WHT",
 }
 
+// custom dirent type
+
 type Dirent struct {
 	Ino  uint64
 	Type uint8
 	Name string
 }
+
+// code ripped off from Go os and syscall modules
+// almost identically -- some simplifications
+// are done but instead of entry names we return
+// Dirents
 
 func clen(n []byte) int {
 	for i := 0; i < len(n); i++ {
@@ -108,6 +126,8 @@ func Readdir(f *os.File, n int) (dirents []*Dirent, err error) {
 	return dirents, nil
 }
 
+
+// utility function to convert between stat and dirent style type info
 func Modestat(path string) (uint8, error) {
 	var stat syscall.Stat_t
 	err := syscall.Lstat(path, &stat)

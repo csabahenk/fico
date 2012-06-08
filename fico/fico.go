@@ -1,3 +1,8 @@
+// Copyright 2012 Csaba Henk. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+
 package main
 
 import (
@@ -35,15 +40,20 @@ var filterfiles *bool
 var stat *bool
 var fuzzy *bool
 
+
 func colorize(c int, txt string) string {
 	return fmt.Sprintf("\x1b[01;3%dm%s\x1b[00m", c, txt)
 }
 
-// don't waste time on cleaning
+
+// filepath.Join replacement: don't waste time on cleaning
 func pjoin(elem ...string) string {
 	return strings.Join(elem, "/")
 }
 
+
+// churn out the errno from err and match against list
+// of tolerated errnos
 func relaxerrno(err error, errnos ...syscall.Errno) bool {
 	var xerrno syscall.Errno
 	switch xerr := err.(type) {
@@ -62,8 +72,10 @@ func relaxerrno(err error, errnos ...syscall.Errno) bool {
 	return false
 }
 
+// job specifier and methods
+
 type jspec struct {
-	prefix int
+	prefix int   // path up to this index not considered when matching
 	path string
 }
 
@@ -77,14 +89,18 @@ func (js *jspec) match(pat string) bool {
 	return matching
 }
 
+
+// concurrent file counting
+
 func countdir(js *jspec, c chan *jspec) int {
+	// get entries from js.path
 	f, err := os.Open(js.path)
 	if err != nil {
 		if *fuzzy && relaxerrno(err, syscall.ENOENT) {
 			fmt.Fprintln(os.Stderr, "[W]", js.path, "got error with", err)
 			return 0
 		} else {
-			log.Fatal(err)
+			log.Fatal(js.path, ": ", err)
 		}
 	}
 	des, err := dir.Readdir(f, *hint)
@@ -94,10 +110,11 @@ func countdir(js *jspec, c chan *jspec) int {
 			fmt.Fprintln(os.Stderr, "[W]", js.path, "got error with", err)
 			return 0
 		} else {
-			log.Fatal(err)
+			log.Fatal(js.path, ": ", err)
 		}
 	}
 
+	// process the entries
 	fc := 0
 	for _, de := range des {
 		if de.Type == dir.DT_UNKNOWN {
@@ -109,11 +126,11 @@ func countdir(js *jspec, c chan *jspec) int {
 							     "got error with", err)
 						continue
 					} else {
-						log.Fatal(err)
+						log.Fatal(js.join(de).path, ": ", err)
 					}
 				}
 			} else {
-				log.Fatalf("got no filetype info: %s", js.join(de).path)
+				log.Fatal("got no filetype info: ", js.join(de).path)
 			}
 		}
 		switch de.Type {
@@ -121,10 +138,12 @@ func countdir(js *jspec, c chan *jspec) int {
 			if *filter != "" && *filterfiles && js.join(de).match(*filter) {
 				continue
 			}
+			// count
 			fc += 1
 		case dir.DT_DIR:
 			jsn := js.join(de)
 			if *filter != "" && jsn.match(*filter) { continue }
+			// job request sent back to scheduler
 			c <- jsn
 		}
 	}
@@ -134,11 +153,13 @@ func countdir(js *jspec, c chan *jspec) int {
 	return fc
 }
 
+// worker
 func counter(cwi, cwo chan *jspec, cc chan int) {
 	count := 0
 	for {
 		js := <-cwi
 		if js == nil {
+			// nil indicates end of run, send back result and bye
 			cc <- count
 			return
 		}
@@ -147,7 +168,9 @@ func counter(cwi, cwo chan *jspec, cc chan int) {
 	}
 }
 
+// scheduler
 func countdirs(dpaths []string) int {
+	// init and fire up workers
 	cwi := make(chan *jspec, 3 * *hint / *workers)
 	cwo := make(chan *jspec, 3 * *hint / *workers)
 	cc := make(chan int)
@@ -155,31 +178,42 @@ func countdirs(dpaths []string) int {
 		go counter(cwi, cwo, cc)
 	}
 
+	// send intial tasks
 	for _, dp := range dpaths {
 		cwi <- &jspec{len(dp) + 1, dp}
 	}
 
+	// make dynamic "overflow" buffer to handle channel saturation
 	q := make([]*jspec, 0, 3 * *hint)
+	// n: number of outstanding jobs
 	for n := len(dpaths); n != 0; {
+		// fetch new job req or termination report from workers
 		js := <-cwo
 		if *debug { fmt.Println("jobstat", js, n, q, len(cwi), cap(cwi)) }
 		if js == nil {
+			// termination report
 			n -= 1
+			// load reduced: if there are jobs stashed to overflow buf,
+			// take one and give it a chance to get running
 			if len(q) > 0 {
 				js = q[0]
 				q = q[1:]
 			}
 		}
 		if js != nil {
+			// trying to load job to a worker
 			select {
 			case cwi <- js:
+				// succeeded, one more job in progress
 				n += 1
 			default:
+				// failed, save job in overflow buf
 				q = append(q, js)
 			}
 		}
 	}
 
+	// harvest result
 	count := 0
 	for i := 0; i < *workers; i++ {
 		cwi <- nil
@@ -189,17 +223,20 @@ func countdirs(dpaths []string) int {
 	return count
 }
 
-func next(n, m , t int) int {
-	n = t - (t % n) + n
-	m = t - (t % m) + m
-	if (n < m) {
-		return n
+
+// utility func to get smallest number over t
+// that is a multiple of some of vals
+func next(t int, vals ...int) int {
+	n := t + vals[0]
+	for _, v := range vals {
+		v = t - (t % v) + v
+		if (v < n) { n = v }
 	}
-	return m
+	return n
 }
 
 
-const usage = `Intuit mon.sh clone
+const usage = `FAST CONCURRENT TUNABLE fiLE coUNTER
 
 %s [options] [targets...]
 options:
@@ -212,19 +249,20 @@ type scanrec struct {
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, usage, os.Args[0])
+		fmt.Fprintf(os.Stderr, usage, filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
 	debug = flag.Bool("debug", false, "debug mode")
-	hint = flag.Int("hint", 256, "filenumber hint")
+	hint = flag.Int("hint", 256, "directory branchiness hint (hint on avg. no. of entires in dirs)")
 	workers = flag.Int("workers", runtime.NumCPU() + 1, "number of workers")
-	filter = flag.String("filter", "", "glob patterns to exclude")
-	filterfiles = flag.Bool("filterfiles", false, "apply filter to files, too")
-	stat = flag.Bool("stat", false, "salvage missing dirent type by lstat")
+	filter = flag.String("filter", "", "glob pattern to exclude " +
+			     "(matching done relatively from targets, matching dirs are not entered)")
+	filterfiles = flag.Bool("filterfiles", false, "apply 'filter' to file counting, too")
+	stat = flag.Bool("stat", false, "salvage missing dirent type by falling back to lstat")
 	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
-	scan := flag.Int("scanby", 10, "interval to scan by")
-	rec  := flag.Int("recby", 20, "interval to record by")
-	turns := flag.Int("turns", 0, "number of iterations")
+	scan := flag.Int("scan", 10, "interval to scan by")
+	hili  := flag.Int("hili", 20, "interval to show highlighted scan result")
+	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
 	logp := flag.String("logf", "", "log file")
 	flag.Parse()
 
@@ -234,7 +272,7 @@ func main() {
 	var err error
 	if *logp != "" {
 		logf, err = os.OpenFile(*logp, os.O_WRONLY|os.O_CREATE, 0600)
-		if err != nil { log.Fatal(err) }
+		if err != nil { log.Fatal("cannot open logfile ", *logp, ": ", err) }
 	}
 
 	if *filter != "" {
@@ -258,7 +296,7 @@ func main() {
 			count := countdirs(targets)
 			tn1 := time.Now()
 			m := fmt.Sprintf("%3d %6d", t, count)
-			if t % *rec == 0 {
+			if t % *hili == 0 {
 				m = colorize(RED, m)
 			}
 			fmt.Println(m)
@@ -267,12 +305,12 @@ func main() {
 				if err != nil { log.Fatal(err) }
 				jlog = append(jlog, '\n')
 				_, err = logf.Write(jlog)
-				if err != nil { log.Fatal(err) }
+				if err != nil { log.Fatal("error writing to logfile: ", err) }
 			}
 			if tr == 0 { os.Exit(0) }
 		}(t, *turns)
 		to := t
-		t = next(*scan, *rec, t)
+		t = next(t, *scan, *hili)
 		time.Sleep(time.Duration(t - to) * time.Second)
 	}
 }

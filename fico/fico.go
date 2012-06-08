@@ -31,6 +31,7 @@ var debug *bool
 var workers *int
 var filter *string
 var filterfiles *bool
+var stat *bool
 
 func colorize(c int, txt string) string {
 	return fmt.Sprintf("\x1b[01;3%dm%s\x1b[00m", c, txt)
@@ -65,9 +66,15 @@ func countdir(js *jspec, c chan *jspec) int {
 
 	fc := 0
 	for _, de := range des {
+		if de.Type == dir.DT_UNKNOWN {
+			if *stat {
+				de.Type, err = dir.Modestat(js.join(de).path)
+				if err != nil { log.Fatal(err) }
+			} else {
+				log.Fatalf("got no filetype info: %s", js.join(de).path)
+			}
+		}
 		switch de.Type {
-		case dir.DT_UNKNOWN:
-			log.Fatalf("got no filetype info: %s", js.join(de).path)
 		case dir.DT_REG:
 			if *filter != "" && *filterfiles && js.join(de).match(*filter) {
 				continue
@@ -171,6 +178,7 @@ func main() {
 	workers = flag.Int("workers", runtime.NumCPU() + 1, "number of workers")
 	filter = flag.String("filter", "", "glob patterns to exclude")
 	filterfiles = flag.Bool("filterfiles", false, "apply filter to files, too")
+	stat = flag.Bool("stat", false, "salvage missing dirent type by lstat")
 	scan := flag.Int("scanby", 10, "interval to scan by")
 	rec  := flag.Int("recby", 20, "interval to record by")
 	turns := flag.Int("turns", 0, "number of iterations")

@@ -107,3 +107,11 @@ func Readdir(f *os.File, n int) (dirents []*Dirent, err error) {
 	}
 	return dirents, nil
 }
+
+func Modestat(path string) (uint8, error) {
+	var stat syscall.Stat_t
+	err := syscall.Lstat(path, &stat)
+	if err != nil { return 0, err }
+	// cf. http://lxr.linux.no/linux+v3.4.1/include/linux/fs.h#L1578
+	return uint8((stat.Mode >> 12) & 15), nil
+}

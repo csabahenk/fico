@@ -3,9 +3,22 @@
 [![Fico cute](http://blog.sme.sk/blog/1090/65024/robert_fico_dvojrocny.jpg)](http://en.wikipedia.org/wiki/Robert_Fico)
 
 This program counts files under a list of given target directories.
-User can log results of repeated scans, and gets control over what
-system calls to use. Basic mode of operation uses only readdir(3),
-so that filesystem gets less load (than using stats).
+User gets control over what system calls to use. Basic mode of operation
+uses only [readdir(3)](http://linux.die.net/man/3/readdir)
+([getdents(2)](http://linux.die.net/man/2/getdents)), so that filesystem gets less load
+(than using [lstat(2)](http://linux.die.net/man/2/lstat)s).
+
+With `-dump`, it can be used as a low-level alternative of
+[find(1)](http://pubs.opengroup.org/onlinepubs/9699919799/utilities/find.html),
+that guarantees to spare the filesystem from stat'ing. (Nb. on Linux `find`
+does stats if `-type` option is used, so it does not export readdir-based
+type information.)
+
+The other focus of the utility is monitoring, ie. it repeatedly counts files
+/ dumps filenames and can also produce a json feed of the result with timing
+information.
+
+Tested/expected to work on Linux x64.
 
 ## Build
 
@@ -29,6 +42,9 @@ Otherwise, follow these steps:
     fico [options] [targets...]
     options:
       -debug=false: debug mode
+      -dump=false: dump entries instead of counting them
+      -dump-0=false: on dumping, separate entries by zero byte
+      -dump-fullpath=false: on dumping, do not strip off path to target
       -filter="": glob pattern to exclude (matching done relatively from targets, matching dirs are not entered)
       -filterfiles=false: apply 'filter' to file counting, too
       -fuzzy=false: tolerate fs fuzzines (errors due to ongoing changes)

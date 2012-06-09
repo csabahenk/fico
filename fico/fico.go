@@ -39,6 +39,9 @@ var filter *string
 var filterfiles *bool
 var stat *bool
 var fuzzy *bool
+var dump *bool
+var dump_fullpath *bool
+var dump_sep byte
 
 
 func colorize(c int, txt string) string {
@@ -75,12 +78,16 @@ func relaxerrno(err error, errnos ...syscall.Errno) bool {
 // job specifier and methods
 
 type jspec struct {
+	runid int
 	prefix int   // path up to this index not considered when matching
 	path string
 }
 
 func (js *jspec) join(de *dir.Dirent) *jspec {
-	return &jspec{js.prefix, pjoin(js.path, de.Name)}
+	jsn := new(jspec)
+	*jsn = *js
+	jsn.path = pjoin(js.path, de.Name)
+	return jsn
 }
 
 func (js *jspec) match(pat string) bool {
@@ -117,23 +124,33 @@ func countdir(js *jspec, c chan *jspec) int {
 	// process the entries
 	fc := 0
 	for _, de := range des {
-		if de.Type == dir.DT_UNKNOWN {
-			if *stat {
-				de.Type, err = dir.Modestat(js.join(de).path)
-				if err != nil {
-					if *fuzzy && relaxerrno(err, syscall.ENOENT) {
-						fmt.Fprintln(os.Stderr, "[W]", js.join(de).path,
-							     "got error with", err)
-						continue
-					} else {
-						log.Fatal(js.join(de).path, ": ", err)
-					}
+		if de.Type == dir.DT_UNKNOWN && *stat {
+			de.Type, err = dir.Modestat(js.join(de).path)
+			if err != nil {
+				if *fuzzy && relaxerrno(err, syscall.ENOENT) {
+					fmt.Fprintln(os.Stderr, "[W]", js.join(de).path,
+						     "got error with", err)
+					continue
+				} else {
+					log.Fatal(js.join(de).path, ": ", err)
 				}
-			} else {
-				log.Fatal("got no filetype info: ", js.join(de).path)
 			}
 		}
+		if *dump {
+			var idx int
+			if *dump_fullpath {
+				idx = 0
+			} else {
+				idx = js.prefix
+			}
+			fmt.Printf("%d %d %s %s%c", js.runid, de.Ino, dir.Types[de.Type],
+				   js.join(de).path[idx:], dump_sep)
+		}
 		switch de.Type {
+		case dir.DT_UNKNOWN:
+			if ! *dump {
+				log.Fatal("got no filetype info: ", js.join(de).path)
+			}
 		case dir.DT_REG:
 			if *filter != "" && *filterfiles && js.join(de).match(*filter) {
 				continue
@@ -169,7 +186,7 @@ func counter(cwi, cwo chan *jspec, cc chan int) {
 }
 
 // scheduler
-func countdirs(dpaths []string) int {
+func countdirs(dpaths []string, t int) int {
 	// init and fire up workers
 	cwi := make(chan *jspec, 3 * *hint / *workers)
 	cwo := make(chan *jspec, 3 * *hint / *workers)
@@ -180,7 +197,7 @@ func countdirs(dpaths []string) int {
 
 	// send intial tasks
 	for _, dp := range dpaths {
-		cwi <- &jspec{len(dp) + 1, dp}
+		cwi <- &jspec{t, len(dp) + 1, dp}
 	}
 
 	// make dynamic "overflow" buffer to handle channel saturation
@@ -211,6 +228,10 @@ func countdirs(dpaths []string) int {
 				q = append(q, js)
 			}
 		}
+	}
+
+	if *dump {
+		fmt.Printf("%d%c", t, dump_sep)
 	}
 
 	// harvest result
@@ -260,6 +281,9 @@ func main() {
 	filterfiles = flag.Bool("filterfiles", false, "apply 'filter' to file counting, too")
 	stat = flag.Bool("stat", false, "salvage missing dirent type by falling back to lstat")
 	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
+	dump = flag.Bool("dump", false, "dump entries instead of counting them")
+	dump_fullpath = flag.Bool("dump-fullpath", false, "on dumping, do not strip off path to target")
+	dump_zero := flag.Bool("dump-0", false, "on dumping, separate entries by zero byte")
 	scan := flag.Int("scan", 10, "interval to scan by")
 	hili  := flag.Int("hili", 20, "interval to show highlighted scan result")
 	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
@@ -281,6 +305,12 @@ func main() {
 		if err != nil { log.Fatal(err) }
 	}
 
+	if *dump_zero {
+		dump_sep = '\x00'
+	} else {
+		dump_sep = '\n'
+	}
+
 	targets := flag.Args()
 	if len(targets) == 0 {
 		targets = []string { "." }
@@ -293,13 +323,15 @@ func main() {
 		*turns -= 1
 		go func(t, tr int) {
 			tn0 := time.Now()
-			count := countdirs(targets)
+			count := countdirs(targets, t)
 			tn1 := time.Now()
-			m := fmt.Sprintf("%3d %6d", t, count)
-			if t % *hili == 0 {
-				m = colorize(RED, m)
+			if !*dump {
+				m := fmt.Sprintf("%3d %6d", t, count)
+				if t % *hili == 0 {
+					m = colorize(RED, m)
+				}
+				fmt.Println(m)
 			}
-			fmt.Println(m)
 			if logf != nil {
 				jlog, err := json.Marshal(scanrec{ tn0, tn1, t, count})
 				if err != nil { log.Fatal(err) }

@@ -287,6 +287,7 @@ func main() {
 	scan := flag.Int("scan", 10, "interval to scan by")
 	hili  := flag.Int("hili", 20, "interval to show highlighted scan result")
 	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
+	flimit := flag.Int("flimit", 0, "run 'till this number of files is reached (≤0 means no limit)")
 	logp := flag.String("logf", "", "log file")
 	flag.Parse()
 
@@ -339,7 +340,7 @@ func main() {
 				_, err = logf.Write(jlog)
 				if err != nil { log.Fatal("error writing to logfile: ", err) }
 			}
-			if tr == 0 { os.Exit(0) }
+			if tr == 0 || (*flimit > 0 && count >= *flimit) { os.Exit(0) }
 		}(t, *turns)
 		to := t
 		t = next(t, *scan, *hili)

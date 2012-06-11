@@ -47,6 +47,7 @@ Otherwise, follow these steps:
       -dump-fullpath=false: on dumping, do not strip off path to target
       -filter="": glob pattern to exclude (matching done relatively from targets, matching dirs are not entered)
       -filterfiles=false: apply 'filter' to file counting, too
+      -flimit=0: run 'till this number of files is reached (≤0 means no limit)
       -fuzzy=false: tolerate fs fuzzines (errors due to ongoing changes)
       -hili=20: interval to show highlighted scan result
       -hint=256: directory branchiness hint (hint on avg. no. of entires in dirs)

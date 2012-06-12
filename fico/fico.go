@@ -296,17 +296,18 @@ func main() {
 	stat = flag.Bool("stat", false, "salvage missing dirent type by falling back to lstat")
 	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
 	dump = flag.Bool("dump", false, "dump entries instead of counting them")
-	dump_fullpath = flag.Bool("dump-fullpath", false, "on dumping, do not strip off path to target")
-	dump_zero := flag.Bool("dump-0", false, "on dumping, separate entries by zero byte")
+	dump_fullpath = flag.Bool("dumpfullpath", false, "on dumping, do not strip off path to target")
+	dump_zero := flag.Bool("dump0", false, "on dumping, separate entries by zero byte")
 	scan := flag.Int("scan", 10, "interval to scan by")
 	hili  := flag.Int("hili", 20, "interval to show highlighted scan result")
 	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
 	flimit := flag.Int("flimit", 0, "run 'till this number of files is reached (≤0 means no limit)")
 	logp := flag.String("logf", "", "log file")
-	cont := flag.Bool("cont", false, "continue logging from where it was left off (append to log)")
-	argsorig := make([]string, len(os.Args))
-	copy(argsorig, os.Args)
+	logappend := flag.Bool("logappend", false, "append to previously existing logfile")
+	logcont := flag.Bool("logcont", false, "continue logging with relative time of earlier logs" +
+			     " (implies logappend)")
 	flag.Parse()
+	oargs := os.Args
 
 	runtime.GOMAXPROCS(*workers)
 
@@ -314,11 +315,11 @@ func main() {
 	var err error
 	toff := 0
 	if *logp != "" {
-		oflags := os.O_WRONLY|os.O_TRUNC
-		if *cont { oflags = os.O_RDWR }
-		logf, err = os.OpenFile(*logp, oflags|os.O_CREATE, 0600)
+		oflags := os.O_RDWR|os.O_CREATE
+		if !(*logappend || *logcont) { oflags |= os.O_TRUNC }
+		logf, err = os.OpenFile(*logp, oflags, 0600)
 		if err != nil { log.Fatal("cannot open logfile ", *logp, ": ", err) }
-		if *cont {
+		if *logcont {
 			jdec := json.NewDecoder(logf)
 			var je map[string]interface{}
 			for {
@@ -338,8 +339,10 @@ func main() {
 				if err != nil { log.Fatal(err) }
 				toff = jsr.Trel + int(time.Since(jsr.Tstart).Seconds())
 			}
+		} else if *logappend {
+			logf.Seek(0, os.SEEK_END)
 		}
-		writelog(logf, scanhead{ time.Now(), argsorig })
+		writelog(logf, scanhead{ time.Now(), oargs })
 	}
 
 	if *filter != "" {

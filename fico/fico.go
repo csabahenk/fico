@@ -7,6 +7,7 @@ package main
 
 import (
 	"os"
+	"io"
 	"log"
 	"fmt"
 	"path"
@@ -268,6 +269,19 @@ type scanrec struct {
 	Trel, Files int
 }
 
+type scanhead struct {
+	Tstart time.Time
+	Args []string
+}
+
+func writelog(logf io.Writer, j interface{}) {
+	jlog, err := json.Marshal(j)
+	if err != nil { log.Fatal(err) }
+	jlog = append(jlog, '\n')
+	_, err = logf.Write(jlog)
+	if err != nil { log.Fatal("error writing to logfile: ", err) }
+}
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, filepath.Base(os.Args[0]))
@@ -289,15 +303,43 @@ func main() {
 	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
 	flimit := flag.Int("flimit", 0, "run 'till this number of files is reached (≤0 means no limit)")
 	logp := flag.String("logf", "", "log file")
+	cont := flag.Bool("cont", false, "continue logging from where it was left off (append to log)")
+	argsorig := make([]string, len(os.Args))
+	copy(argsorig, os.Args)
 	flag.Parse()
 
 	runtime.GOMAXPROCS(*workers)
 
 	var logf *os.File
 	var err error
+	toff := 0
 	if *logp != "" {
-		logf, err = os.OpenFile(*logp, os.O_WRONLY|os.O_CREATE, 0600)
+		oflags := os.O_WRONLY|os.O_TRUNC
+		if *cont { oflags = os.O_RDWR }
+		logf, err = os.OpenFile(*logp, oflags|os.O_CREATE, 0600)
 		if err != nil { log.Fatal("cannot open logfile ", *logp, ": ", err) }
+		if *cont {
+			jdec := json.NewDecoder(logf)
+			var je map[string]interface{}
+			for {
+				var jex map[string]interface{}
+				err = jdec.Decode(&jex)
+				if err == io.EOF { break }
+				if err != nil { log.Fatal(err) }
+				je = jex
+			}
+			// ducktyping on scanrec
+			if _, ok := je["Trel"]; ok {
+				// re-decode the json to scanrec
+				var jsr scanrec
+				jblob, err := json.Marshal(je)
+				if err != nil { log.Fatal(err) }
+				err = json.Unmarshal(jblob, &jsr)
+				if err != nil { log.Fatal(err) }
+				toff = jsr.Trel + int(time.Since(jsr.Tstart).Seconds())
+			}
+		}
+		writelog(logf, scanhead{ time.Now(), argsorig })
 	}
 
 	if *filter != "" {
@@ -320,7 +362,7 @@ func main() {
 		targets[i] = path.Clean(targets[i])
 	}
 
-	for t := 0;; {
+	for t := toff;; {
 		*turns -= 1
 		go func(t, tr int) {
 			tn0 := time.Now()
@@ -334,11 +376,7 @@ func main() {
 				fmt.Println(m)
 			}
 			if logf != nil {
-				jlog, err := json.Marshal(scanrec{ tn0, tn1, t, count})
-				if err != nil { log.Fatal(err) }
-				jlog = append(jlog, '\n')
-				_, err = logf.Write(jlog)
-				if err != nil { log.Fatal("error writing to logfile: ", err) }
+				writelog(logf, scanrec{ tn0, tn1, t, count})
 			}
 			if tr == 0 || (*flimit > 0 && count >= *flimit) { os.Exit(0) }
 		}(t, *turns)

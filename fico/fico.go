@@ -260,7 +260,7 @@ func next(t int, vals ...int) int {
 
 const usage = `FAST CONCURRENT TUNABLE fiLE coUNTER
 
-%s [options] [targets...]
+%s [options] [targets...] [-- message]
 options:
 `
 
@@ -272,6 +272,11 @@ type scanrec struct {
 type scanhead struct {
 	Tstart time.Time
 	Args []string
+}
+
+type scanmessage struct {
+	Tstart time.Time
+	Message string
 }
 
 func writelog(logf io.Writer, j interface{}) {
@@ -308,6 +313,7 @@ func main() {
 			     " (implies logappend)")
 	flag.Parse()
 	oargs := os.Args
+	nargs := flag.Args()
 
 	runtime.GOMAXPROCS(*workers)
 
@@ -342,7 +348,17 @@ func main() {
 		} else if *logappend {
 			logf.Seek(0, os.SEEK_END)
 		}
+		msg := ""
+		for i,a := range(nargs) {
+			if a == "--" {
+				msg = strings.Join(nargs[i+1:], " ")
+				oargs = oargs[:len(oargs) - len(nargs) + i]
+				nargs = nargs[:i]
+				break
+			}
+		}
 		writelog(logf, scanhead{ time.Now(), oargs })
+		if msg != "" { writelog(logf, scanmessage{ time.Now(), msg }) }
 	}
 
 	if *filter != "" {
@@ -357,7 +373,7 @@ func main() {
 		dump_sep = '\n'
 	}
 
-	targets := flag.Args()
+	targets := nargs
 	if len(targets) == 0 {
 		targets = []string { "." }
 	}

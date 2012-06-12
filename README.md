@@ -39,7 +39,7 @@ Otherwise, follow these steps:
     $ fico -h
     FAST CONCURRENT TUNABLE fiLE coUNTER
 
-    fico [options] [targets...]
+    fico [options] [targets...] [-- message]
     options:
       -debug=false: debug mode
       -dump=false: dump entries instead of counting them

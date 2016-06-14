@@ -1,6 +1,6 @@
 ## Fico the File Counter
 
-[![Fico cute](http://blog.sme.sk/blog/1090/65024/robert_fico_dvojrocny.jpg)](http://en.wikipedia.org/wiki/Robert_Fico)
+[![Fico cute](assests/robert_fico_dvojrocny.jpg)](http://en.wikipedia.org/wiki/Robert_Fico)
 
 This program counts files under a list of given target directories.
 User gets control over what system calls to use. Basic mode of operation

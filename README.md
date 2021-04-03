@@ -22,15 +22,22 @@ Tested/expected to work on Linux x64.
 
 ## Build
 
-- get [Go ≥ 1.0](http://golang.org)
-- optionally, get the [go-gb](http://code.google.com/p/go-gb) build tool
+You need [Go](http://golang.org) for the build.
 
-If using go-gb, just run `gb` at the top of source directory (binary will be in `_bin`).
-Otherwise, follow these steps:
+### Building with the module system (recommended)
+
+Tested with Go 1.16.
+
+    cd fico
+    go build
+
+### Building without the module system
+
+This might be the workable procedure for other Go versions if the "with module" instructions don't work.
 
     mkdir _
     ln -s .. _/src
-    GOPATH=$PWD/_ go install fico
+    GO111MODULE=off GOPATH=$PWD/_ go install fico
 
 (binary will be in `_/bin`).
 

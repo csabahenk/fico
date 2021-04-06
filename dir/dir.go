@@ -128,10 +128,15 @@ func Readdir(f *os.File, n int) (dirents []*Dirent, err error) {
 
 
 // utility function to convert between stat and dirent style type info
+func StatModeToDirentType(st_mode uint32) uint8 {
+	return uint8((st_mode >> 12) & 15)
+}
+
+// get Dirent type of path via lstat(2)
 func Modestat(path string) (uint8, error) {
 	var stat syscall.Stat_t
 	err := syscall.Lstat(path, &stat)
 	if err != nil { return 0, err }
 	// cf. http://lxr.linux.no/linux+v3.4.1/include/linux/fs.h#L1578
-	return uint8((stat.Mode >> 12) & 15), nil
+	return StatModeToDirentType(stat.Mode), nil
 }

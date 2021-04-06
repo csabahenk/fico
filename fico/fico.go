@@ -33,6 +33,14 @@ const (
 	WHITE
 )
 
+type mode_t int
+
+const (
+	counting mode_t = iota
+	dump_dentry
+	dump_stat
+)
+
 var hint *int
 var debug *bool
 var workers *int
@@ -40,10 +48,11 @@ var filter *string
 var filterfiles *bool
 var stat *bool
 var fuzzy *bool
-var dump *bool
+var mode mode_t
 var dump_fullpath *bool
 var dump_sep byte
 
+var jsonenc *json.Encoder
 
 func colorize(c int, txt string) string {
 	return fmt.Sprintf("\x1b[01;3%dm%s\x1b[00m", c, txt)
@@ -98,6 +107,39 @@ func (js *jspec) match(pat string) bool {
 }
 
 
+type pathctx struct {
+	*jspec
+	stat syscall.Stat_t
+	statted bool
+	err error
+}
+
+func (pctx *pathctx) lstat() error {
+	if !pctx.statted {
+		pctx.err = syscall.Lstat(pctx.path, &pctx.stat)
+		pctx.statted = true
+	}
+	return pctx.err
+}
+
+func (pctx *pathctx) pathrepr(full bool) string {
+	var idx int
+	if full {
+		idx = 0
+	} else {
+		idx = pctx.prefix
+	}
+
+	return pctx.path[idx:]
+}
+
+type PathInfo struct {
+	Elapsed int
+	Path string
+	Root string
+	Stat interface{}
+}
+
 // concurrent file counting
 
 func countdir(js *jspec, c chan *jspec) int {
@@ -125,44 +167,49 @@ func countdir(js *jspec, c chan *jspec) int {
 	// process the entries
 	fc := 0
 	for _, de := range des {
+		pctx := pathctx{jspec: js.join(de)}
+
 		if de.Type == dir.DT_UNKNOWN && *stat {
-			de.Type, err = dir.Modestat(js.join(de).path)
-			if err != nil {
-				if *fuzzy && relaxerrno(err, syscall.ENOENT) {
-					fmt.Fprintln(os.Stderr, "[W]", js.join(de).path,
-						     "got error with", err)
+			if pctx.lstat() != nil {
+				if *fuzzy && relaxerrno(pctx.err, syscall.ENOENT) {
+					fmt.Fprintln(os.Stderr, "[W]", pctx.path,
+						     "got error with", pctx.err)
 					continue
 				} else {
-					log.Fatal(js.join(de).path, ": ", err)
+					log.Fatal(pctx.path, ": ", pctx.err)
 				}
 			}
+			de.Type = dir.StatModeToDirentType(pctx.stat.Mode)
 		}
-		if *dump {
-			var idx int
-			if *dump_fullpath {
-				idx = 0
-			} else {
-				idx = js.prefix
-			}
+		switch mode {
+		case dump_dentry:
 			fmt.Printf("%d %d %s %s%c", js.runid, de.Ino, dir.Types[de.Type],
-				   js.join(de).path[idx:], dump_sep)
+				   pctx.pathrepr(*dump_fullpath), dump_sep)
+		case dump_stat:
+			if pctx.lstat() != nil {
+				log.Fatal(pctx.path, ": ", pctx.err)
+			}
+			pi := PathInfo{js.runid, pctx.pathrepr(*dump_fullpath),
+				       pctx.path[:pctx.prefix], pctx.stat}
+			if err := jsonenc.Encode(pi); err != nil {
+				log.Fatal(pctx.path, ": ", err)
+			}
 		}
 		switch de.Type {
 		case dir.DT_UNKNOWN:
-			if ! *dump {
+			if mode == counting {
 				log.Fatal("got no filetype info: ", js.join(de).path)
 			}
 		case dir.DT_REG:
-			if *filter != "" && *filterfiles && js.join(de).match(*filter) {
+			if *filter != "" && *filterfiles && pctx.jspec.match(*filter) {
 				continue
 			}
 			// count
 			fc += 1
 		case dir.DT_DIR:
-			jsn := js.join(de)
-			if *filter != "" && jsn.match(*filter) { continue }
+			if *filter != "" && pctx.jspec.match(*filter) { continue }
 			// job request sent back to scheduler
-			c <- jsn
+			c <- pctx.jspec
 		}
 	}
 
@@ -231,7 +278,7 @@ func countdirs(dpaths []string, t int) int {
 		}
 	}
 
-	if *dump {
+	if mode == dump_dentry {
 		fmt.Printf("%d%c", t, dump_sep)
 	}
 
@@ -300,12 +347,12 @@ func main() {
 	filterfiles = flag.Bool("filterfiles", false, "apply 'filter' to file counting, too")
 	stat = flag.Bool("stat", false, "salvage missing dirent type by falling back to lstat")
 	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
-	dump = flag.Bool("dump", false, "dump entries instead of counting them")
+	mode_str := flag.String("mode", "counting", "counting / dump_dentry / dump_stat")
 	dump_fullpath = flag.Bool("dumpfullpath", false, "on dumping, do not strip off path to target")
-	dump_zero := flag.Bool("dump0", false, "on dumping, separate entries by zero byte")
+	dump_zero := flag.Bool("dump0", false, "on dump_dentry, separate entries by zero byte")
 	scan := flag.Int("scan", 10, "interval to scan by")
 	hili  := flag.Int("hili", 20, "interval to show highlighted scan result")
-	turns := flag.Int("turns", 0, "number of iterations (≤0 means infinite)")
+	turns := flag.Int("turns", 1, "number of iterations (≤0 means infinite)")
 	flimit := flag.Int("flimit", 0, "run 'till this number of files is reached (≤0 means no limit)")
 	logp := flag.String("logf", "", "log file")
 	logappend := flag.Bool("logappend", false, "append to previously existing logfile")
@@ -314,6 +361,18 @@ func main() {
 	flag.Parse()
 	oargs := os.Args
 	nargs := flag.Args()
+
+	switch *mode_str {
+	case "counting":
+		mode = counting
+	case "dump_dentry":
+		mode = dump_dentry
+	case "dump_stat":
+		mode = dump_stat
+		jsonenc = json.NewEncoder(os.Stdout)
+	default:
+		log.Fatal("unknown mode ", *mode_str)
+	}
 
 	runtime.GOMAXPROCS(*workers)
 
@@ -387,7 +446,7 @@ func main() {
 			tn0 := time.Now()
 			count := countdirs(targets, t)
 			tn1 := time.Now()
-			if !*dump {
+			if mode == counting {
 				m := fmt.Sprintf("%3d %6d", t, count)
 				if t % *hili == 0 {
 					m = colorize(RED, m)

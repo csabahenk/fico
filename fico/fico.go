@@ -6,6 +6,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"io"
 	"log"
@@ -18,8 +19,6 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"syscall"
-
-	"dir"
 )
 
 const (
@@ -46,7 +45,6 @@ var debug *bool
 var workers *int
 var filter *string
 var filterfiles *bool
-var stat *bool
 var fuzzy *bool
 var mode mode_t
 var dump_fullpath *bool
@@ -93,10 +91,10 @@ type jspec struct {
 	path string
 }
 
-func (js *jspec) join(de *dir.Dirent) *jspec {
+func (js *jspec) join(de fs.DirEntry) *jspec {
 	jsn := new(jspec)
 	*jsn = *js
-	jsn.path = pjoin(js.path, de.Name)
+	jsn.path = pjoin(js.path, de.Name())
 	return jsn
 }
 
@@ -106,31 +104,15 @@ func (js *jspec) match(pat string) bool {
 	return matching
 }
 
-
-type pathctx struct {
-	*jspec
-	stat syscall.Stat_t
-	statted bool
-	err error
-}
-
-func (pctx *pathctx) lstat() error {
-	if !pctx.statted {
-		pctx.err = syscall.Lstat(pctx.path, &pctx.stat)
-		pctx.statted = true
-	}
-	return pctx.err
-}
-
-func (pctx *pathctx) pathrepr(full bool) string {
+func (js *jspec) pathrepr(full bool) string {
 	var idx int
 	if full {
 		idx = 0
 	} else {
-		idx = pctx.prefix
+		idx = js.prefix
 	}
 
-	return pctx.path[idx:]
+	return js.path[idx:]
 }
 
 type PathInfo struct {
@@ -139,6 +121,33 @@ type PathInfo struct {
 	Root string
 	Stat interface{}
 }
+
+func typerep(fm fs.FileMode) (s string) {
+	fm = fm & fs.ModeType
+	switch fm {
+	case fs.ModeIrregular:
+		s = "UNKNOWN"
+	case fs.ModeNamedPipe:
+		s = "FIFO"
+	case fs.ModeCharDevice:
+		s = "CHR"
+	case fs.ModeDir:
+		s = "DIR"
+	case fs.ModeDevice:
+		s = "BLK"
+	case 0:
+		s = "REG"
+	case fs.ModeSymlink:
+		s = "LNK"
+	case fs.ModeSocket:
+		s = "SOCK"
+	default:
+		s = fm.String()
+	}
+
+	return
+}
+
 
 // concurrent file counting
 
@@ -153,7 +162,7 @@ func countdir(js *jspec, c chan *jspec) int {
 			log.Fatal(js.path, ": ", err)
 		}
 	}
-	des, err := dir.Readdir(f, *hint)
+	des, err := f.ReadDir(0)
 	f.Close()
 	if err != nil {
 		if *fuzzy && relaxerrno(err, syscall.ENOENT, syscall.ENOTDIR) {
@@ -167,49 +176,34 @@ func countdir(js *jspec, c chan *jspec) int {
 	// process the entries
 	fc := 0
 	for _, de := range des {
-		pctx := pathctx{jspec: js.join(de)}
+		jsn := js.join(de)
 
-		if de.Type == dir.DT_UNKNOWN && *stat {
-			if pctx.lstat() != nil {
-				if *fuzzy && relaxerrno(pctx.err, syscall.ENOENT) {
-					fmt.Fprintln(os.Stderr, "[W]", pctx.path,
-						     "got error with", pctx.err)
-					continue
-				} else {
-					log.Fatal(pctx.path, ": ", pctx.err)
-				}
-			}
-			de.Type = dir.StatModeToDirentType(pctx.stat.Mode)
-		}
 		switch mode {
 		case dump_dentry:
-			fmt.Printf("%d %d %s %s%c", js.runid, de.Ino, dir.Types[de.Type],
-				   pctx.pathrepr(*dump_fullpath), dump_sep)
+			fmt.Printf("%d %d %s %s%c", js.runid, -1, typerep(de.Type()),
+				   jsn.pathrepr(*dump_fullpath), dump_sep)
 		case dump_stat:
-			if pctx.lstat() != nil {
-				log.Fatal(pctx.path, ": ", pctx.err)
+			fi, err := de.Info()
+
+			if err != nil {
+				log.Fatal(jsn.path, ": ", err)
 			}
-			pi := PathInfo{js.runid, pctx.pathrepr(*dump_fullpath),
-				       pctx.path[:pctx.prefix], pctx.stat}
+			pi := PathInfo{js.runid, jsn.pathrepr(*dump_fullpath),
+				       jsn.path[:jsn.prefix], fi.Sys()}
 			if err := jsonenc.Encode(pi); err != nil {
-				log.Fatal(pctx.path, ": ", err)
+				log.Fatal(jsn.path, ": ", err)
 			}
 		}
-		switch de.Type {
-		case dir.DT_UNKNOWN:
-			if mode == counting {
-				log.Fatal("got no filetype info: ", js.join(de).path)
-			}
-		case dir.DT_REG:
-			if *filter != "" && *filterfiles && pctx.jspec.match(*filter) {
+		if de.Type().IsRegular() {
+			if *filter != "" && *filterfiles && jsn.match(*filter) {
 				continue
 			}
 			// count
 			fc += 1
-		case dir.DT_DIR:
-			if *filter != "" && pctx.jspec.match(*filter) { continue }
+		} else if de.Type().IsDir() {
+			if *filter != "" && jsn.match(*filter) { continue }
 			// job request sent back to scheduler
-			c <- pctx.jspec
+			c <- jsn
 		}
 	}
 
@@ -345,7 +339,6 @@ func main() {
 	filter = flag.String("filter", "", "glob pattern to exclude " +
 			     "(matching done relatively from targets, matching dirs are not entered)")
 	filterfiles = flag.Bool("filterfiles", false, "apply 'filter' to file counting, too")
-	stat = flag.Bool("stat", false, "salvage missing dirent type by falling back to lstat")
 	fuzzy = flag.Bool("fuzzy", false, "tolerate fs fuzzines (errors due to ongoing changes)")
 	mode_str := flag.String("mode", "counting", "counting / dump_dentry / dump_stat")
 	dump_fullpath = flag.Bool("dumpfullpath", false, "on dumping, do not strip off path to target")

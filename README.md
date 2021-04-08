@@ -78,8 +78,6 @@ This might be the workable procedure for other Go versions if the "with module" 
         	counting / dump_dentry / dump_stat (default "counting")
       -scan int
         	interval to scan by (default 10)
-      -stat
-        	salvage missing dirent type by falling back to lstat
       -turns int
         	number of iterations (≤0 means infinite) (default 1)
       -workers int
